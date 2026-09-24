@@ -1,0 +1,51 @@
+schema_version = 1
+
+[project]
+package = "lilygo-ui-telegram"
+version = "0.1.0"
+app_id = "cc.lilygo.ui.Telegram"
+title = "LilyChat"
+summary = "Unofficial Telegram client for LILYGO UI"
+description = "LilyChat is an unofficial Telegram client for LILYGO UI devices. It uses the Telegram API via TDLib and is part of the Telegram ecosystem, with no official affiliation."
+license = "MIT"
+source_repo = "https://github.com/LILYGO-UI/lilygo-ui-telegram"
+homepage = "https://github.com/LILYGO-UI/lilygo-ui-telegram"
+categories = ["Network"]
+
+[[project.authors]]
+name = "lbuque"
+email = "110239031@qq.com"
+
+[project.assets]
+icon = "assets/app-icon.png"
+
+[[project.assets.screenshots]]
+path = "assets/previews/preview1.png"
+caption = "Main application screen"
+
+[[project.permissions]]
+id = "network"
+reason = "Access online application data"
+
+[[project.permissions]]
+id = "filesystem"
+access = "read-write"
+scope = "app-data"
+reason = "Store application settings"
+
+[project.compatibility]
+architectures = ["arm64"]
+min_appkit_version = "0.1.0"
+
+[project.launcher]
+order = 90
+
+[build]
+host_preset = "host-simulator"
+cross_preset = "cm0-cross"
+package_dir = "dist"
+
+[deploy]
+host = "raspberrypi.local"
+user = "pi"
+port = 22

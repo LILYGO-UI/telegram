@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>LilyChat</title>
+  <desc>A white L-shaped conversation mark with a mint reply bubble on coral.</desc>
+  <rect width="128" height="128" rx="28" fill="#E95360"/>
+  <path d="M68 51h24a15 15 0 0 1 15 15v17a15 15 0 0 1-15 15h-2l-1 12-15-12h-6a15 15 0 0 1-15-15V66a15 15 0 0 1 15-15Z" fill="#A7F0D0"/>
+  <path d="M37 23h34a17 17 0 0 1 17 17v24a17 17 0 0 1-17 17H49L27 96l3-17a17 17 0 0 1-10-15V40a17 17 0 0 1 17-17Z" fill="#FFFFFF" stroke="#E95360" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M43 41v21h23" fill="none" stroke="#E95360" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
