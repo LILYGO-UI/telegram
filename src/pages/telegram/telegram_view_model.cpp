@@ -104,6 +104,10 @@ bool TelegramViewModel::start()
     discard_model_events();
     failed_downloads_.clear();
     background_downloads_.clear();
+    qr_login_link_.clear();
+    qr_login_requested_ = false;
+    login_restart_pending_ = false;
+    login_method_ = LoginMethod::PhoneNumber;
     viewed_chat_id_           = 0;
     viewed_latest_message_id_ = 0;
     error_text_.clear();
@@ -242,9 +246,68 @@ const std::string& TelegramViewModel::draft(std::int64_t chat_id) const noexcept
     return found == drafts_.end() ? empty : found->second;
 }
 
-bool TelegramViewModel::submit_auth_input(std::string input)
+bool TelegramViewModel::request_qr_login()
 {
     if (!running_) return false;
+    if (login_restart_pending_) {
+        if (login_method_ == LoginMethod::QrCode) return false;
+        login_method_ = LoginMethod::QrCode;
+    } else {
+        if (model_.auth_state() != AuthState::WaitingForPhoneNumber || qr_login_requested_) return false;
+        if (!invoke_client("Unable to request QR code login", [this] { client_->request_qr_login(); })) return false;
+        qr_login_link_.clear();
+        qr_login_requested_ = true;
+        login_method_ = LoginMethod::QrCode;
+    }
+
+    set_error_text({});
+    refresh_status_text();
+    ++revision_;
+    return true;
+}
+
+bool TelegramViewModel::select_phone_login()
+{
+    if (!running_ || auth_page_state() != AuthState::WaitingForOtherDeviceConfirmation) return false;
+    if (!login_restart_pending_) {
+        if (!invoke_client("Unable to switch to phone sign-in", [this] { client_->restart_phone_login(); })) return false;
+        login_restart_pending_ = true;
+        qr_login_requested_ = false;
+    }
+    login_method_ = LoginMethod::PhoneNumber;
+    set_error_text({});
+    refresh_status_text();
+    ++revision_;
+    return true;
+}
+
+AuthState TelegramViewModel::auth_page_state() const noexcept
+{
+    if (login_restart_pending_ || (qr_login_requested_ && model_.auth_state() == AuthState::WaitingForPhoneNumber)) {
+        return login_method_ == LoginMethod::QrCode ? AuthState::WaitingForOtherDeviceConfirmation
+                                                  : AuthState::WaitingForPhoneNumber;
+    }
+    return model_.auth_state();
+}
+
+bool TelegramViewModel::auth_input_pending() const noexcept
+{
+    return qr_login_requested_ || login_restart_pending_;
+}
+
+bool TelegramViewModel::qr_login_requested() const noexcept
+{
+    return qr_login_requested_;
+}
+
+const std::string& TelegramViewModel::qr_login_link() const noexcept
+{
+    return qr_login_link_;
+}
+
+bool TelegramViewModel::submit_auth_input(std::string input)
+{
+    if (!running_ || auth_input_pending()) return false;
 
     const AuthState state = model_.auth_state();
     if (state != AuthState::WaitingForPassword) input = trim(std::move(input));
@@ -429,8 +492,42 @@ bool TelegramViewModel::apply_event(ClientEvent event)
 {
     bool changed = false;
     switch (event.kind) {
-        case ClientEventKind::AuthStateChanged:
+        case ClientEventKind::AuthStateChanged: {
+            const bool restart_finished = login_restart_pending_ && event.auth_state == AuthState::WaitingForPhoneNumber;
+            const bool restart_cancelled = login_restart_pending_ &&
+                event.auth_state != AuthState::WaitingForPhoneNumber &&
+                event.auth_state != AuthState::WaitingForOtherDeviceConfirmation &&
+                event.auth_state != AuthState::WaitingForParameters &&
+                event.auth_state != AuthState::LoggingOut && event.auth_state != AuthState::Closing &&
+                event.auth_state != AuthState::Closed;
+            if (restart_finished || restart_cancelled) {
+                login_restart_pending_ = false;
+                changed = true;
+                if (restart_finished) changed |= set_error_text({});
+            }
             changed |= model_.set_auth_state(event.auth_state);
+            if (event.auth_state == AuthState::WaitingForOtherDeviceConfirmation) {
+                if (!login_restart_pending_) login_method_ = LoginMethod::QrCode;
+                if (qr_login_link_ != event.text) {
+                    qr_login_link_ = event.text;
+                    changed = true;
+                }
+                if (qr_login_requested_) {
+                    qr_login_requested_ = false;
+                    changed = true;
+                }
+            } else {
+                if (!qr_login_link_.empty()) {
+                    qr_login_link_.clear();
+                    changed = true;
+                }
+                if (event.auth_state != AuthState::WaitingForPhoneNumber && qr_login_requested_) {
+                    qr_login_requested_ = false;
+                    changed = true;
+                }
+                if (!login_restart_pending_ && event.auth_state != AuthState::WaitingForPhoneNumber)
+                    login_method_ = LoginMethod::PhoneNumber;
+            }
             account_ready_ = event.auth_state == AuthState::Ready;
             if (!account_ready_) changed |= clear_account_state();
             if (event.auth_state != AuthState::Ready && event.auth_state != AuthState::Error) {
@@ -447,7 +544,7 @@ bool TelegramViewModel::apply_event(ClientEvent event)
                 changed |= model_.clear_chats();
             }
             changed |= refresh_status_text();
-            if (!event.text.empty()) {
+            if (!event.text.empty() && event.auth_state != AuthState::WaitingForOtherDeviceConfirmation) {
                 if (event.auth_state == AuthState::Error) {
                     changed |= set_error_text(std::move(event.text));
                 } else {
@@ -457,7 +554,17 @@ bool TelegramViewModel::apply_event(ClientEvent event)
                     changed |= set_status_text(std::move(status));
                 }
             }
+            if (restart_finished && login_method_ == LoginMethod::QrCode) {
+                if (invoke_client("Unable to request QR code login", [this] { client_->request_qr_login(); })) {
+                    qr_login_requested_ = true;
+                } else {
+                    login_method_ = LoginMethod::PhoneNumber;
+                }
+                changed = true;
+                changed |= refresh_status_text();
+            }
             break;
+        }
         case ClientEventKind::ConnectionStateChanged:
             changed |= model_.set_connection_state(event.connection_state);
             changed |= refresh_status_text();
@@ -511,6 +618,19 @@ bool TelegramViewModel::apply_event(ClientEvent event)
             }
             if (background_downloads_.erase(event.file.id) == 0)
                 changed |= set_error_text(std::move(event.text));
+            if (model_.auth_state() == AuthState::WaitingForPhoneNumber && qr_login_requested_) {
+                qr_login_requested_ = false;
+                login_method_ = LoginMethod::PhoneNumber;
+                changed = true;
+                changed |= refresh_status_text();
+            }
+            if (login_restart_pending_ && event.auth_restart_failed) {
+                login_restart_pending_ = false;
+                login_method_ = model_.auth_state() == AuthState::WaitingForOtherDeviceConfirmation
+                                    ? LoginMethod::QrCode : LoginMethod::PhoneNumber;
+                changed = true;
+                changed |= refresh_status_text();
+            }
             break;
         case ClientEventKind::Account:
             if (!account_ready_ || !account_model_.accepts(event.account)) break;
@@ -572,6 +692,10 @@ bool TelegramViewModel::apply_file_update(const FileInfo& file)
 
 bool TelegramViewModel::refresh_status_text()
 {
+    if (login_restart_pending_)
+        return set_status_text(login_method_ == LoginMethod::QrCode ? "Preparing QR code sign-in"
+                                                                   : "Preparing phone sign-in");
+    if (qr_login_requested_) return set_status_text("Requesting a QR code");
     switch (model_.auth_state()) {
         case AuthState::Unknown:
             return set_status_text("Starting Telegram");
@@ -590,7 +714,7 @@ bool TelegramViewModel::refresh_status_text()
         case AuthState::WaitingForRegistration:
             return set_status_text("Registration is required");
         case AuthState::WaitingForOtherDeviceConfirmation:
-            return set_status_text("Confirm login on another device");
+            return set_status_text("Waiting for Telegram scan");
         case AuthState::WaitingForPremiumPurchase:
             return set_status_text("Telegram Premium is required to sign in");
         case AuthState::LoggingOut:

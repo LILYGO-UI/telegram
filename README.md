@@ -14,7 +14,7 @@ LVGL 9.5 和 TDLib JSON 接口，目标硬件为四核 1 GHz Cortex-A53 与
 
 已支持：
 
-- 已有 Telegram 账号登录，包括手机号、邮件、验证码和两步验证密码流程；
+- 已有 Telegram 账号登录，包括二维码、手机号、邮件、验证码和两步验证密码流程；
 - 聊天列表、日期分组消息和横竖屏加载更早历史消息；
 - 在缓存会话的名称和最后消息预览中本地搜索；
 - 按会话保留内存中的文本草稿，切换会话或页签后恢复；
@@ -106,19 +106,37 @@ ctest --preset host-simulator
 TELEGRAM_DEMO=1 lpm start --no-build --foreground
 ```
 
+## 主机真实 Telegram 后端
+
+开发机可以使用独立的 `host-telegram` preset 构建真实 TDLib 后端。配置会优先使用
+`LILYGO_UI_TDJSON_LIBRARY`；如果仓库中存在 `.cache/tdlib/install/lib/libtdjson.dylib`
+或 `.so`，CMake 会自动记录该路径。API 凭据仍通过环境变量提供：
+
+```sh
+cmake --preset host-telegram
+cmake --build --preset host-telegram --parallel
+TELEGRAM_API_ID=123456 \
+TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef \
+lpm start --preset host-telegram --no-build --foreground
+```
+
+也可以继续使用 `.lpm/start-telegram.sh`，它会加载本机凭据、TDLib 路径和已有登录
+数据。`host-simulator` 保留给不连接 Telegram 的 UI 测试；运行时设置
+`TELEGRAM_DEMO=0` 仍可在任意主机构建上切换到真实后端。
+
 ## 连接 Telegram
 
 真实后端需要从 [my.telegram.org](https://my.telegram.org/) 申请应用的 `api_id` 和
 `api_hash`，并在运行时提供兼容的 TDLib JSON 共享库：
 
 ```sh
-cmake --preset host-simulator -DTELEGRAM_DEMO=OFF
-cmake --build --preset host-simulator --parallel
+cmake --preset host-telegram
+cmake --build --preset host-telegram --parallel
 TELEGRAM_DEMO=0 \
 TELEGRAM_API_ID=123456 \
 TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef \
 LILYGO_UI_TDJSON_LIBRARY=/absolute/path/to/libtdjson.dylib \
-lpm start --no-build --foreground
+lpm start --preset host-telegram --no-build --foreground
 ```
 
 `lpm start` 可以直接启动真实后端，取决于运行环境和构建默认值。
@@ -203,6 +221,9 @@ LVGL 缩放，避免分块缩放导致图像错位。图片下载和解码按当
 | `TELEGRAM_DATABASE_KEY` | TDLib 本地数据库原始加密密钥，首次使用后应保持不变 |
 | `LILYGO_UI_TDJSON_LIBRARY` | `libtdjson` 共享库的绝对路径 |
 | `XDG_DATA_HOME` | 覆盖应用数据根目录 |
+
+开发机也可以在 CMake 配置时用 `-DTELEGRAM_TDJSON_LIBRARY=/absolute/path/to/libtdjson.dylib`
+指定默认库路径；运行时的 `LILYGO_UI_TDJSON_LIBRARY` 优先级更高。
 
 `TELEGRAM_API_ID` 和 `TELEGRAM_API_HASH` 也能通过同名 CMake 参数设置，但运行时
 环境变量优先。不要提交包含凭据的构建缓存，也不要在日志中输出验证码、两步验证

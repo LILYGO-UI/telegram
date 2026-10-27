@@ -21,6 +21,15 @@
       }
     },
     {
+      "name": "host-telegram",
+      "displayName": "Host SDL simulator with real Telegram",
+      "inherits": ["host-simulator"],
+      "binaryDir": "${sourceDir}/build/host-telegram",
+      "cacheVariables": {
+        "TELEGRAM_DEMO": "OFF"
+      }
+    },
+    {
       "name": "cm0-cross",
       "displayName": "CM0 Raspberry Pi OS AArch64",
       "generator": "Unix Makefiles",
@@ -43,6 +52,10 @@
       "configurePreset": "host-simulator"
     },
     {
+      "name": "host-telegram",
+      "configurePreset": "host-telegram"
+    },
+    {
       "name": "cm0-cross",
       "configurePreset": "cm0-cross"
     }
@@ -51,6 +64,13 @@
     {
       "name": "host-simulator",
       "configurePreset": "host-simulator",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "host-telegram",
+      "configurePreset": "host-telegram",
       "output": {
         "outputOnFailure": true
       }

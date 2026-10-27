@@ -49,6 +49,7 @@ struct ClientEvent {
     std::int64_t chat_id    = 0;
     std::int64_t message_id = 0;
     std::string text;
+    bool auth_restart_failed = false;
     bool is_history = false;
     AccountUpdate account;
 };
@@ -68,6 +69,8 @@ public:
     virtual void stop() noexcept                                           = 0;
 
     virtual void submit_phone_number(std::string phone_number)   = 0;
+    virtual void request_qr_login()                              = 0;
+    virtual void restart_phone_login()                          = 0;
     virtual void submit_email_address(std::string email_address) = 0;
     virtual void submit_email_code(std::string code)             = 0;
     virtual void submit_code(std::string code)                   = 0;

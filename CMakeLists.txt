@@ -9,6 +9,11 @@ find_package(LilyGoUI CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 find_package(JPEG QUIET)
 
+# LVGL includes its QR widget in the bundled source but disables it by default.
+if(TARGET lvgl)
+    target_compile_definitions(lvgl PUBLIC LV_USE_QRCODE=1)
+endif()
+
 set(TELEGRAM_USE_LVGL_TJPGD OFF)
 if(NOT JPEG_FOUND AND TARGET lvgl)
     get_target_property(_telegram_lvgl_is_imported lvgl IMPORTED)
@@ -21,6 +26,24 @@ endif()
 option(TELEGRAM_DEMO "Use deterministic local Telegram data instead of TDLib" ${CM0_SIMULATOR})
 set(TELEGRAM_API_ID "" CACHE STRING "Telegram application api_id (runtime TELEGRAM_API_ID takes precedence)")
 set(TELEGRAM_API_HASH "" CACHE STRING "Telegram application api_hash (runtime TELEGRAM_API_HASH takes precedence)")
+set(TELEGRAM_TDJSON_LIBRARY "" CACHE FILEPATH
+    "Development-machine TDLib JSON shared library (runtime LILYGO_UI_TDJSON_LIBRARY takes precedence)")
+# A local TDLib checkout is the normal development-machine setup. Remember its
+# path in the generated configuration so running the real backend only needs
+# API credentials; the runtime environment variable remains the explicit
+# override for other installations.
+if(TELEGRAM_TDJSON_LIBRARY STREQUAL "" AND CM0_SIMULATOR)
+    foreach(_telegram_tdjson_candidate IN ITEMS
+            "${CMAKE_CURRENT_SOURCE_DIR}/.cache/tdlib/install/lib/libtdjson.dylib"
+            "${CMAKE_CURRENT_SOURCE_DIR}/.cache/tdlib/install/lib/libtdjson.so")
+        if(EXISTS "${_telegram_tdjson_candidate}")
+            set(TELEGRAM_TDJSON_LIBRARY "${_telegram_tdjson_candidate}" CACHE FILEPATH
+                "Development-machine TDLib JSON shared library (runtime LILYGO_UI_TDJSON_LIBRARY takes precedence)"
+                FORCE)
+            break()
+        endif()
+    endforeach()
+endif()
 # Populate empty caches too, so existing lpm builds pick up exported credentials.
 foreach(_telegram_api_setting IN ITEMS TELEGRAM_API_ID TELEGRAM_API_HASH)
     if("${${_telegram_api_setting}}" STREQUAL "" AND DEFINED ENV{${_telegram_api_setting}})
@@ -36,6 +59,8 @@ else()
 endif()
 string(REPLACE "\\" "\\\\" TELEGRAM_API_HASH_ESCAPED "${TELEGRAM_API_HASH}")
 string(REPLACE "\"" "\\\"" TELEGRAM_API_HASH_ESCAPED "${TELEGRAM_API_HASH_ESCAPED}")
+string(REPLACE "\\" "\\\\" TELEGRAM_TDJSON_LIBRARY_ESCAPED "${TELEGRAM_TDJSON_LIBRARY}")
+string(REPLACE "\"" "\\\"" TELEGRAM_TDJSON_LIBRARY_ESCAPED "${TELEGRAM_TDJSON_LIBRARY_ESCAPED}")
 set(LILYGO_UI_TELEGRAM_DEMO ${TELEGRAM_DEMO})
 if(CM0_SIMULATOR)
     set(_telegram_demo_image "${CMAKE_CURRENT_SOURCE_DIR}/assets/demo-photo.jpg")
@@ -188,6 +213,25 @@ if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
         lilygo_ui_telegram_ui)
     add_test(NAME telegram-voice-identity COMMAND telegram-voice-identity-tests)
 
+    add_executable(telegram-qr-login-ui-tests tests/test_qr_login_ui.cpp)
+    target_compile_options(telegram-qr-login-ui-tests PRIVATE
+        -Wall -Wextra -Wpedantic -UNDEBUG)
+    target_link_libraries(telegram-qr-login-ui-tests PRIVATE
+        lilygo_ui_telegram_ui)
+    add_test(NAME telegram-qr-login-ui COMMAND telegram-qr-login-ui-tests)
+
+    if(CM0_SIMULATOR)
+        add_executable(telegram-keyboard-tests tests/test_telegram_keyboard.cpp)
+        target_compile_options(telegram-keyboard-tests PRIVATE
+            -Wall -Wextra -Wpedantic -UNDEBUG)
+        target_link_libraries(telegram-keyboard-tests PRIVATE
+            lilygo_ui_telegram_ui)
+        add_test(NAME telegram-keyboard COMMAND telegram-keyboard-tests)
+        set_tests_properties(telegram-keyboard PROPERTIES
+            TIMEOUT 10
+            ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
+    endif()
+
     if(TELEGRAM_USE_LVGL_TJPGD)
         add_executable(telegram-lvgl-photo-decoder-tests tests/test_lvgl_photo_decoder.cpp)
         target_compile_options(telegram-lvgl-photo-decoder-tests PRIVATE
@@ -203,6 +247,24 @@ if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
     target_link_libraries(telegram-tdlib-mapping-tests PRIVATE
         lilygo_ui_telegram_services)
     add_test(NAME telegram-tdlib-mapping COMMAND telegram-tdlib-mapping-tests)
+
+    add_library(telegram-tdjson-auth-fixture SHARED tests/tdjson_auth_fixture.cpp)
+    target_compile_features(telegram-tdjson-auth-fixture PRIVATE cxx_std_17)
+    target_compile_options(telegram-tdjson-auth-fixture PRIVATE -Wall -Wextra -Wpedantic)
+    target_link_libraries(telegram-tdjson-auth-fixture PRIVATE Threads::Threads)
+    add_executable(telegram-tdlib-auth-restart-tests tests/test_tdlib_auth_restart.cpp)
+    target_compile_options(telegram-tdlib-auth-restart-tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    target_link_libraries(telegram-tdlib-auth-restart-tests PRIVATE
+        lilygo_ui_telegram_services telegram-tdjson-auth-fixture)
+    add_test(NAME telegram-tdlib-auth-restart COMMAND telegram-tdlib-auth-restart-tests
+        $<TARGET_FILE:telegram-tdjson-auth-fixture>)
+
+    add_executable(telegram-tdlib-message-updates-tests tests/test_tdlib_message_updates.cpp)
+    target_compile_options(telegram-tdlib-message-updates-tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    target_link_libraries(telegram-tdlib-message-updates-tests PRIVATE
+        lilygo_ui_telegram_services telegram-tdjson-auth-fixture)
+    add_test(NAME telegram-tdlib-message-updates COMMAND telegram-tdlib-message-updates-tests
+        $<TARGET_FILE:telegram-tdjson-auth-fixture>)
 
     add_executable(telegram-tdlib-account-tests tests/test_tdlib_account.cpp)
     target_compile_options(telegram-tdlib-account-tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)

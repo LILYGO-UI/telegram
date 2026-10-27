@@ -20,6 +20,8 @@ namespace telegram {
 
 class TelegramViewModel {
 public:
+    enum class LoginMethod { PhoneNumber, QrCode };
+
     static constexpr std::size_t kEventQueueCapacity   = 256;
     static constexpr std::size_t kMaxPumpEvents        = 64;
     static constexpr std::int32_t kHistoryPageSize     = 40;
@@ -62,6 +64,12 @@ public:
     [[nodiscard]] const std::string& contact_search() const noexcept;
     [[nodiscard]] std::vector<Contact> filtered_contacts() const;
 
+    bool request_qr_login();
+    bool select_phone_login();
+    [[nodiscard]] AuthState auth_page_state() const noexcept;
+    [[nodiscard]] bool auth_input_pending() const noexcept;
+    [[nodiscard]] bool qr_login_requested() const noexcept;
+    [[nodiscard]] const std::string& qr_login_link() const noexcept;
     bool submit_auth_input(std::string input);
     bool select_chat(std::int64_t chat_id);
     bool back_to_chats();
@@ -99,6 +107,10 @@ private:
     std::string status_text_ = "Telegram is stopped";
     std::string error_text_;
     std::string chat_search_;
+    std::string qr_login_link_;
+    bool qr_login_requested_ = false;
+    bool login_restart_pending_ = false;
+    LoginMethod login_method_ = LoginMethod::PhoneNumber;
     std::unordered_map<std::int64_t, std::string> drafts_;
     std::vector<std::int32_t> failed_downloads_;
     std::unordered_set<std::int32_t> background_downloads_;

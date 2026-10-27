@@ -4,7 +4,9 @@
 #include "components/components.hpp"
 #include "pages/telegram/lvgl_photo_decoder.hpp"
 
+#include <cm0/input.h>
 #include <cm0/typography.h>
+#include <src/libs/qrcode/lv_qrcode.h>
 
 #include <algorithm>
 #include <array>
@@ -59,6 +61,21 @@ lv_obj_t* make_label(lv_obj_t* parent, const char* text, std::uint32_t size,
     return label;
 }
 
+void style_auth_button(lv_obj_t* button)
+{
+    // Launcher account_submit retains the separated, translucent theme outline.
+    // Explicit local width lets AppKit preserve this control's focus treatment.
+    const auto width = lv_display_dpx(lv_obj_get_display(button), 3);
+    lv_obj_set_style_border_width(button, 0, 0);
+    lv_obj_set_style_radius(button, 12, 0);
+    lv_obj_set_style_bg_color(button, lv_color_hex(0x007aff), 0);
+    lv_obj_set_style_bg_color(button, lv_color_hex(0x006fe6), LV_STATE_PRESSED);
+    lv_obj_set_style_outline_width(button, width, LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_outline_pad(button, width, LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_outline_color(button, lv_theme_get_color_primary(button), LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_outline_opa(button, LV_OPA_50, LV_STATE_FOCUS_KEY);
+}
+
 lv_obj_t* make_icon_button(lv_obj_t* parent, const char* name, const char* symbol, lv_event_cb_t callback,
                            void* context)
 {
@@ -97,6 +114,27 @@ void set_hidden(lv_obj_t* object, bool hidden)
     } else {
         lv_obj_remove_flag(object, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+bool can_restore_focus(lv_obj_t* object)
+{
+    if (!object || !lv_obj_has_flag(object, LV_OBJ_FLAG_CLICKABLE)) return false;
+    for (auto* current = object; current; current = lv_obj_get_parent(current)) {
+        if (lv_obj_has_flag(current, LV_OBJ_FLAG_HIDDEN) || lv_obj_has_state(current, LV_STATE_DISABLED))
+            return false;
+    }
+    return true;
+}
+
+lv_obj_t* find_focus_target(lv_obj_t* parent, const std::string& name)
+{
+    const auto* object_name = lv_obj_get_name(parent);
+    if (object_name && name == object_name && can_restore_focus(parent)) return parent;
+    for (std::uint32_t index = 0; index < lv_obj_get_child_count(parent); ++index) {
+        if (auto* found = find_focus_target(lv_obj_get_child(parent, static_cast<std::int32_t>(index)), name))
+            return found;
+    }
+    return nullptr;
 }
 
 std::string first_character(const std::string& text)
@@ -333,7 +371,7 @@ const char* auth_title(telegram::AuthState state)
         case AuthState::WaitingForRegistration:
             return "Registration required";
         case AuthState::WaitingForOtherDeviceConfirmation:
-            return "Confirm this sign-in";
+            return "Scan QR code";
         case AuthState::WaitingForPremiumPurchase:
             return "Premium required";
         case AuthState::Error:
@@ -478,7 +516,11 @@ void TelegramView::destroy() noexcept
     image_results_.close();
     avatar_results_.close();
     voice_results_.close();
-    if (surface_) lv_obj_delete(surface_);
+    if (surface_) {
+        rebuilding_ = true;
+        hide_keyboard();
+        lv_obj_delete(surface_);
+    }
     surface_       = nullptr;
     header_        = nullptr;
     header_back_   = nullptr;
@@ -494,6 +536,7 @@ void TelegramView::destroy() noexcept
     search_input_  = nullptr;
     send_button_   = nullptr;
     logout_dialog_ = nullptr;
+    rebuilding_    = false;
     pending_account_chat_open_ = false;
     pending_account_confirmation_ = {};
     account_form_drafts_.clear();
@@ -576,12 +619,29 @@ void TelegramView::auth_submit_event(lv_event_t* event)
     if (view) view->submit_auth();
 }
 
+void TelegramView::auth_qr_event(lv_event_t* event)
+{
+    auto* view = static_cast<TelegramView*>(lv_event_get_user_data(event));
+    if (!view) return;
+    view->hide_keyboard();
+    view->view_model_.request_qr_login();
+}
+
+void TelegramView::auth_phone_event(lv_event_t* event)
+{
+    auto* view = static_cast<TelegramView*>(lv_event_get_user_data(event));
+    if (!view) return;
+    view->hide_keyboard();
+    view->view_model_.select_phone_login();
+}
+
 void TelegramView::logout_event(lv_event_t* event)
 {
     auto* view = static_cast<TelegramView*>(lv_event_get_user_data(event));
     if (!view || view->logout_dialog_) return;
     view->hide_keyboard();
     auto* overlay        = lv_obj_create(view->surface_);
+    cm0_input_set_focus_scope(overlay);
     view->logout_dialog_ = overlay;
     lv_obj_set_name_static(overlay, "telegram_logout_dialog");
     lv_obj_add_flag(overlay, LV_OBJ_FLAG_IGNORE_LAYOUT);
@@ -728,7 +788,8 @@ void TelegramView::older_clicked_event(lv_event_t* event)
 void TelegramView::input_focused_event(lv_event_t* event)
 {
     auto* view = static_cast<TelegramView*>(lv_event_get_user_data(event));
-    if (view) view->show_keyboard(static_cast<lv_obj_t*>(lv_event_get_target(event)));
+    if (view && !view->rebuilding_)
+        view->show_keyboard(static_cast<lv_obj_t*>(lv_event_get_target(event)));
 }
 
 void TelegramView::keyboard_event(lv_event_t* event)
@@ -843,6 +904,7 @@ void TelegramView::tick()
 void TelegramView::rebuild()
 {
     if (!surface_ || !body_) return;
+    rebuilding_ = true;
 
     const auto current_chat_id   = view_model_.model().current_chat_id();
     const auto& current_messages = view_model_.model().messages();
@@ -875,11 +937,35 @@ void TelegramView::rebuild()
     bool restore_composer_keyboard = false;
     bool restore_search_keyboard   = false;
     std::string restore_account_input;
+    std::string restore_focus_name;
+    std::string restore_focus_key;
+    bool restore_keyboard_focus = false;
     std::uint32_t cursor_position  = 0;
+    lv_group_t* restore_focus_group = nullptr;
+    const bool software_keyboard_visible = keyboard_ && !lv_obj_has_flag(keyboard_, LV_OBJ_FLAG_HIDDEN);
     const auto keyboard_mode       = lv_keyboard_get_mode(keyboard_);
-    const bool same_auth_state     = rendered_auth_state_ == view_model_.model().auth_state();
-    if (keyboard_ && !lv_obj_has_flag(keyboard_, LV_OBJ_FLAG_HIDDEN)) {
-        auto* active              = lv_keyboard_get_textarea(keyboard_);
+    const auto auth_page_state     = view_model_.auth_page_state();
+    const bool same_auth_state     = rendered_auth_page_state_ == auth_page_state;
+    if (keyboard_) {
+        auto* active = lv_keyboard_get_textarea(keyboard_);
+        restore_focus_group = active ? lv_obj_get_group(active) : lv_group_get_default();
+        auto* focused = restore_focus_group ? lv_group_get_focused(restore_focus_group) : nullptr;
+        if (focused) {
+            restore_keyboard_focus = lv_obj_has_state(focused, LV_STATE_FOCUS_KEY);
+            for (const auto& [key, object] : focus_targets_) {
+                if (object == focused) {
+                    restore_focus_key = key;
+                    break;
+                }
+            }
+            if (restore_focus_key.empty()) {
+                if (const auto* name = lv_obj_get_name(focused)) restore_focus_name = name;
+            }
+        }
+        // Tab may have left the editor while its software keyboard is still
+        // visible. The group's current focus takes precedence over that binding.
+        if (focused || !software_keyboard_visible)
+            active = focused && lv_obj_check_type(focused, &lv_textarea_class) ? focused : nullptr;
         restore_auth_keyboard     = active && active == auth_input_;
         restore_composer_keyboard = active && active == composer_;
         restore_search_keyboard   = active && active == search_input_;
@@ -888,10 +974,16 @@ void TelegramView::rebuild()
         if (active) cursor_position = lv_textarea_get_cursor_pos(active);
     }
     const auto auth_state = view_model_.model().auth_state();
-    if (auth_input_ && rendered_auth_state_ == auth_state)
+    if (auth_input_ && rendered_auth_page_state_ == telegram::AuthState::WaitingForPhoneNumber)
+        phone_login_draft_ = lv_textarea_get_text(auth_input_);
+    if (auth_input_ && same_auth_state)
         auth_draft_ = lv_textarea_get_text(auth_input_);
+    else if (auth_page_state == telegram::AuthState::WaitingForPhoneNumber)
+        auth_draft_ = phone_login_draft_;
     else
         auth_draft_.clear();
+    if (auth_page_state == telegram::AuthState::Ready || auth_page_state == telegram::AuthState::Closed)
+        phone_login_draft_.clear();
     if (auth_state != telegram::AuthState::Ready) {
         main_tab_ = MainTab::Chats;
         account_page_ = AccountPage::Settings;
@@ -966,7 +1058,7 @@ void TelegramView::rebuild()
     rendered_main_tab_          = main_tab_;
     rendered_account_page_      = account_page_;
     rendered_chat_details_open_ = chat_details_open_;
-    rendered_auth_state_        = auth_state;
+    rendered_auth_page_state_   = auth_page_state;
     rendered_chat_id_           = current_chat_id;
     rendered_oldest_message_id_ = current_oldest_id;
     rendered_newest_message_id_ = current_newest_id;
@@ -982,6 +1074,7 @@ void TelegramView::rebuild()
         lv_obj_update_layout(account_scroll);
         lv_obj_scroll_to_y(account_scroll, account_scroll_positions_[{main_tab_, account_page_}], LV_ANIM_OFF);
     }
+    rebuilding_ = false;
     lv_obj_t* restore_input     = restore_auth_keyboard       ? auth_input_
                                   : restore_composer_keyboard ? composer_
                                   : restore_search_keyboard   ? search_input_
@@ -989,9 +1082,34 @@ void TelegramView::rebuild()
     if (!restore_account_input.empty()) restore_input = lv_obj_find_by_name(body_, restore_account_input.c_str());
     if (restore_input) {
         lv_textarea_set_cursor_pos(restore_input, cursor_position);
-        lv_obj_add_state(restore_input, LV_STATE_FOCUSED);
+        if (restore_focus_group) {
+            if (lv_obj_get_group(restore_input) != restore_focus_group)
+                lv_group_add_obj(restore_focus_group, restore_input);
+            lv_group_focus_obj(restore_input);
+        }
         show_keyboard(restore_input);
+        if (!software_keyboard_visible) set_hidden(keyboard_, true);
         if (!restore_auth_keyboard || same_auth_state) lv_keyboard_set_mode(keyboard_, keyboard_mode);
+    } else if (restore_focus_group) {
+        lv_obj_t* restore_focus = nullptr;
+        if (!restore_focus_key.empty()) {
+            const auto found = focus_targets_.find(restore_focus_key);
+            if (found != focus_targets_.end()) restore_focus = found->second;
+        } else if (!restore_focus_name.empty()) {
+            restore_focus = find_focus_target(surface_, restore_focus_name);
+        }
+        if (can_restore_focus(restore_focus)) {
+            if (lv_obj_get_group(restore_focus) != restore_focus_group)
+                lv_group_add_obj(restore_focus_group, restore_focus);
+            if (lv_group_get_focused(restore_focus_group) != restore_focus) {
+                // Background updates preserve the user's scroll position too.
+                const bool scroll_on_focus = lv_obj_has_flag(restore_focus, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+                lv_obj_remove_flag(restore_focus, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+                lv_group_focus_obj(restore_focus);
+                if (scroll_on_focus) lv_obj_add_flag(restore_focus, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+            }
+            if (restore_keyboard_focus) lv_obj_add_state(restore_focus, LV_STATE_FOCUS_KEY);
+        }
     }
 }
 
@@ -1064,20 +1182,43 @@ void TelegramView::build_auth()
     lv_obj_set_flex_flow(body_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(body_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
+    const auto state = view_model_.auth_page_state();
+    const bool qr_columns = wide_ && state == telegram::AuthState::WaitingForOtherDeviceConfirmation &&
+                            !view_model_.auth_input_pending() && !view_model_.qr_login_link().empty();
     auto* panel = lv_obj_create(body_);
     make_transparent(panel);
     lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_name_static(panel, "telegram_auth_panel");
-    lv_obj_set_width(panel, wide_ ? 460 : LV_PCT(94));
+    lv_obj_set_width(panel, qr_columns ? 860 : wide_ ? 460 : LV_PCT(94));
     lv_obj_set_height(panel, LV_SIZE_CONTENT);
     lv_obj_set_style_pad_all(panel, wide_ ? 32 : 24, 0);
     lv_obj_set_style_pad_row(panel, 18, 0);
     lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
+    auto* qr_host = panel;
+    if (qr_columns) {
+        lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_ROW);
+        lv_obj_set_style_pad_column(panel, 32, 0);
+        lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        auto* details = lv_obj_create(panel);
+        make_transparent(details);
+        // Reserve space for all four sides of the button's exterior outline.
+        lv_obj_set_style_pad_all(details, 2 * lv_display_dpx(lv_obj_get_display(details), 3), 0);
+        lv_obj_remove_flag(details, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_width(details, 0);
+        lv_obj_set_flex_grow(details, 1);
+        lv_obj_set_height(details, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(details, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(details, 18, 0);
+        qr_host = lv_obj_create(panel);
+        make_transparent(qr_host);
+        lv_obj_remove_flag(qr_host, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_size(qr_host, 256, 256);
+        panel = details;
+    }
     auto* logo = make_label(panel, "\xef\x81\xb5", 48, components::color_action);
     lv_obj_set_width(logo, LV_PCT(100));
     lv_obj_set_style_text_align(logo, LV_TEXT_ALIGN_CENTER, 0);
 
-    const auto state = view_model_.model().auth_state();
     auto* title      = make_label(panel, auth_title(state), 28, components::color_container_title);
     lv_obj_set_name_static(title, "telegram_auth_title");
     lv_obj_set_width(title, LV_PCT(100));
@@ -1100,6 +1241,36 @@ void TelegramView::build_auth()
         lv_label_set_long_mode(error, LV_LABEL_LONG_WRAP);
     }
 
+    if (state == telegram::AuthState::WaitingForOtherDeviceConfirmation) {
+        const auto& link = view_model_.qr_login_link();
+        if (!view_model_.auth_input_pending() && !link.empty()) {
+            auto* qr = lv_qrcode_create(qr_host);
+            lv_obj_set_name_static(qr, "telegram_auth_qr_code");
+            lv_obj_set_style_radius(qr, 0, 0);
+            lv_obj_set_style_border_width(qr, 0, 0);
+            lv_obj_update_layout(panel);
+            lv_qrcode_set_size(qr, std::min<std::int32_t>(256, lv_obj_get_content_width(qr_host)));
+            lv_qrcode_set_dark_color(qr, lv_color_black());
+            lv_qrcode_set_light_color(qr, lv_color_white());
+            lv_qrcode_set_quiet_zone(qr, true);
+            if (lv_qrcode_update(qr, link.data(), static_cast<std::uint32_t>(link.size())) != LV_RESULT_OK) {
+                lv_obj_delete(qr);
+                auto* qr_error = make_label(panel, "Unable to display the QR code.", 14,
+                                            components::color_destructive);
+                lv_obj_set_width(qr_error, LV_PCT(100));
+            }
+        }
+        auto* instructions = make_label(panel, "Open Telegram on your phone and scan this code.", 14,
+                                        components::color_text_secondary);
+        lv_obj_set_width(instructions, LV_PCT(100));
+        lv_label_set_long_mode(instructions, LV_LABEL_LONG_WRAP);
+        auto* phone = components::create_button(panel, "Use phone number", auth_phone_event, this);
+        lv_obj_set_name_static(phone, "telegram_auth_phone_login");
+        lv_obj_set_width(phone, LV_PCT(100));
+        style_auth_button(phone);
+        return;
+    }
+
     if (!auth_accepts_input(state)) return;
 
     auth_input_ = lv_textarea_create(panel);
@@ -1118,6 +1289,15 @@ void TelegramView::build_auth()
     auto* submit = components::create_button(panel, "Continue", auth_submit_event, this);
     lv_obj_set_name_static(submit, "telegram_auth_submit");
     lv_obj_set_width(submit, LV_PCT(100));
+    style_auth_button(submit);
+    if (view_model_.auth_input_pending()) lv_obj_add_state(submit, LV_STATE_DISABLED);
+
+    if (state == telegram::AuthState::WaitingForPhoneNumber) {
+        auto* qr = components::create_button(panel, "Use QR code", auth_qr_event, this);
+        lv_obj_set_name_static(qr, "telegram_auth_qr_login");
+        lv_obj_set_width(qr, LV_PCT(100));
+        style_auth_button(qr);
+    }
 }
 
 void TelegramView::build_workspace()
@@ -1240,6 +1420,7 @@ void TelegramView::build_chat_list(lv_obj_t* parent)
 
         auto* row = lv_button_create(list);
         lv_obj_set_name_static(row, "telegram_chat_row");
+        focus_targets_["chat:" + std::to_string(chat.id)] = row;
         lv_obj_set_width(row, LV_PCT(100));
         lv_obj_set_height(row, 94);
         lv_obj_set_style_radius(row, 0, 0);
@@ -1474,6 +1655,7 @@ void TelegramView::build_contacts(lv_obj_t* parent)
         };
         auto* row = lv_button_create(list);
         lv_obj_set_name_static(row, "telegram_contact_row");
+        focus_targets_["contact:" + std::to_string(contact.id)] = row;
         make_transparent(row);
         if (view_model_.account_busy() || pending_account_chat_open_) lv_obj_add_state(row, LV_STATE_DISABLED);
         lv_obj_set_size(row, LV_PCT(100), 88);
@@ -1507,11 +1689,12 @@ void TelegramView::build_contacts(lv_obj_t* parent)
                                   contact.is_online ? components::color_action : components::color_text_secondary);
         lv_obj_set_size(status, LV_PCT(100), 20);
         lv_label_set_long_mode(status, LV_LABEL_LONG_DOT);
-        action_button(row, "telegram_contact_info", "\xef\x81\x9a", [this, id = contact.id] {
+        auto* info = action_button(row, "telegram_contact_info", "\xef\x81\x9a", [this, id = contact.id] {
             selected_contact_id_ = id;
             account_scroll_positions_[{MainTab::Contacts, AccountPage::ContactDetails}] = 0;
             show_account_page(AccountPage::ContactDetails);
         });
+        focus_targets_["contact-info:" + std::to_string(contact.id)] = info;
     }
     if (contacts.empty()) {
         auto* empty = make_label(list, !view_model_.account().contacts_loaded ?
@@ -1837,6 +2020,7 @@ void TelegramView::build_message(lv_obj_t* parent, const telegram::Message& mess
                 };
                 auto* download = make_icon_button(placeholder, "telegram_photo_download", LV_SYMBOL_DOWNLOAD,
                                                   account_ui_event, action.get());
+                focus_targets_["photo:" + std::to_string(message.chat_id) + ":" + std::to_string(message.id)] = download;
                 if (requested_downloads_.count(message.file.id)) lv_obj_add_state(download, LV_STATE_DISABLED);
                 lv_obj_center(download);
                 account_actions_.push_back(std::move(action));
@@ -1852,6 +2036,7 @@ void TelegramView::build_message(lv_obj_t* parent, const telegram::Message& mess
         context->message   = message;
         auto* voice_button = lv_button_create(bubble);
         lv_obj_set_name_static(voice_button, "telegram_voice");
+        focus_targets_["voice:" + std::to_string(message.chat_id) + ":" + std::to_string(message.id)] = voice_button;
         lv_obj_set_size(voice_button, LV_PCT(100), 52);
         lv_obj_set_style_radius(voice_button, 8, 0);
         lv_obj_set_style_shadow_width(voice_button, 0, 0);
@@ -1909,8 +2094,12 @@ void TelegramView::build_message(lv_obj_t* parent, const telegram::Message& mess
 void TelegramView::show_keyboard(lv_obj_t* textarea)
 {
     if (!keyboard_ || !textarea) return;
-    lv_keyboard_set_textarea(keyboard_, textarea);
-    const auto state       = view_model_.model().auth_state();
+    if (lv_keyboard_get_textarea(keyboard_) != textarea) {
+        lv_keyboard_set_textarea(keyboard_, textarea);
+    } else if (!lv_obj_has_state(textarea, LV_STATE_FOCUSED)) {
+        lv_obj_add_state(textarea, LV_STATE_FOCUSED);
+    }
+    const auto state       = view_model_.auth_page_state();
     const bool number_mode = textarea == auth_input_ && state == telegram::AuthState::WaitingForEmailCode;
     lv_keyboard_set_mode(keyboard_, number_mode ? LV_KEYBOARD_MODE_NUMBER : LV_KEYBOARD_MODE_TEXT_LOWER);
     const auto height = lv_obj_get_content_height(surface_);
@@ -2297,6 +2486,7 @@ void TelegramView::trim_image_cache()
 
 void TelegramView::clear_dynamic_contexts()
 {
+    focus_targets_.clear();
     chat_contexts_.clear();
     voice_contexts_.clear();
     photo_contexts_.clear();

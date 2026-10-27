@@ -3,6 +3,7 @@
 #include "services/telegram/tdlib_client_test.hpp"
 #include "services/telegram/tdlib_account_protocol.hpp"
 #include "support/json.hpp"
+#include "telegram_config.h"
 
 #include <algorithm>
 #include <atomic>
@@ -72,6 +73,13 @@ Json build_initialization_request()
 {
     Json request = make_object("getOption");
     put(request, "name", Json("version"));
+    return request;
+}
+
+Json build_qr_login_request()
+{
+    Json request = make_object("requestQrCodeAuthentication");
+    put(request, "other_user_ids", Json(Json::Array{}));
     return request;
 }
 
@@ -611,6 +619,17 @@ public:
             return false;
         }
 
+        const auto try_open = [this](const char *candidate) {
+            if (!candidate || !candidate[0]) return false;
+            dlerror();
+            handle_ = dlopen(candidate, RTLD_NOW | RTLD_LOCAL);
+            return handle_ != nullptr;
+        };
+
+#if defined(LILYGO_UI_TELEGRAM_TDJSON_LIBRARY)
+        if (try_open(LILYGO_UI_TELEGRAM_TDJSON_LIBRARY)) return true;
+#endif
+
         constexpr const char *candidates[] = {
             "libtdjson.so.1",
             "libtdjson.so",
@@ -618,9 +637,7 @@ public:
             "libtdjson.dylib",
         };
         for (const char *candidate : candidates) {
-            dlerror();
-            handle_ = dlopen(candidate, RTLD_NOW | RTLD_LOCAL);
-            if (handle_) return true;
+            if (try_open(candidate)) return true;
         }
         const char *detail = dlerror();
         *error             = "TDLib JSON runtime is unavailable; install libtdjson or set LILYGO_UI_TDJSON_LIBRARY";
@@ -674,6 +691,8 @@ struct TdJsonApi {
 
 enum class PendingKind {
     Generic,
+    RestartPhoneProbe,
+    RestartPhoneLogout,
     LoadChats,
     GetChat,
     GetUser,
@@ -815,6 +834,16 @@ public:
         enqueue(std::move(request), {PendingKind::Generic, "submit phone number"});
     }
 
+    void request_qr_login() override
+    {
+        enqueue(build_qr_login_request(), {PendingKind::Generic, "request QR code login"});
+    }
+
+    void restart_phone_login() override
+    {
+        enqueue(make_object("getAuthorizationState"), {PendingKind::RestartPhoneProbe, "switch to phone login"});
+    }
+
     void submit_email_address(std::string email_address) override
     {
         Json request = make_object("setAuthenticationEmailAddress");
@@ -945,6 +974,74 @@ public:
     }
 
 private:
+    static bool can_restart_phone_login(AuthState state)
+    {
+        return state == AuthState::WaitingForPhoneNumber ||
+               state == AuthState::WaitingForOtherDeviceConfirmation;
+    }
+
+    void clear_client_state()
+    {
+        pending_requests_.clear();
+        account_.reset();
+        pending_chat_fetches_.clear();
+        pending_user_fetches_.clear();
+        chats_.clear();
+        users_.clear();
+        messages_.clear();
+        auth_state_ = AuthState::Unknown;
+        phone_login_restart_pending_ = false;
+        phone_login_restart_closing_ = false;
+        phone_login_restart_initializing_ = false;
+        client_id_ = 0;
+    }
+
+    bool create_client()
+    {
+        client_id_ = api_->create_client_id();
+        if (client_id_ <= 0) {
+            emit_error("td_create_client_id returned an invalid client identifier");
+            return false;
+        }
+        account_ = std::make_unique<TdlibAccountProtocol>(
+            [this](Json request, std::uint64_t wire_id) {
+                PendingRequest pending;
+                pending.kind = PendingKind::Account;
+                pending.operation = "account request";
+                pending.account_wire_id = wire_id;
+                return send_now({std::move(request), std::move(pending), std::nullopt});
+            },
+            [this](AccountUpdate update) {
+                ClientEvent event;
+                event.kind = ClientEventKind::Account;
+                event.account = std::move(update);
+                emit(std::move(event));
+            },
+            [this](const Json& value) {
+                Chat chat = parse_chat_value(value);
+                cache_chat(chat);
+                return chat;
+            });
+        return send_now({build_initialization_request(), {PendingKind::Generic, "initialize TDLib"}});
+    }
+
+    void handle_phone_login_probe(const Json& state)
+    {
+        const auto mapping = parse_authorization_state_value(state);
+        if (!can_restart_phone_login(mapping.state) || !can_restart_phone_login(auth_state_)) {
+            phone_login_restart_pending_ = false;
+            const PendingRequest pending{PendingKind::RestartPhoneProbe, "switch to phone login"};
+            emit_error("Unable to switch to phone login because authentication has advanced", &pending);
+            if (!can_restart_phone_login(mapping.state)) handle_authorization_state(state);
+            return;
+        }
+        phone_login_restart_closing_ = true;
+        if (!send_now({make_object("logOut"), {PendingKind::RestartPhoneLogout, "switch to phone login"}})) {
+            phone_login_restart_pending_ = false;
+            phone_login_restart_closing_ = false;
+        }
+    }
+
     void enqueue(Json request, PendingRequest pending, std::optional<AccountRequest> account = std::nullopt)
     {
         if (stop_requested_.load(std::memory_order_acquire) || !worker_active_.load(std::memory_order_acquire)) {
@@ -975,6 +1072,9 @@ private:
         ClientEvent event;
         event.kind = ClientEventKind::Error;
         event.text = std::move(text);
+        event.auth_restart_failed = phone_login_restart_initializing_ ||
+            (pending && (pending->kind == PendingKind::RestartPhoneProbe ||
+                         pending->kind == PendingKind::RestartPhoneLogout));
         if (pending) {
             event.chat_id    = pending->chat_id;
             event.message_id = pending->message_id;
@@ -1035,6 +1135,8 @@ private:
 
     void request_message(std::int64_t chat_id, std::int64_t message_id)
     {
+        // Content updates also arrive for messages outside our loaded window.
+        if (messages_.count({chat_id, message_id}) == 0) return;
         Json request = make_object("getMessage");
         put(request, "chat_id", Json(chat_id));
         put(request, "message_id", Json(message_id));
@@ -1065,6 +1167,7 @@ private:
 
     void drain_commands()
     {
+        if (phone_login_restart_pending_) return;
         for (std::size_t count = 0; count < kCommandCapacity; ++count) {
             Command command;
             {
@@ -1073,7 +1176,15 @@ private:
                 command = std::move(commands_.front());
                 commands_.pop_front();
             }
-            if (command.account && account_) account_->submit(std::move(*command.account));
+            if (command.pending.kind == PendingKind::RestartPhoneProbe) {
+                if (!can_restart_phone_login(auth_state_)) {
+                    emit_error("Unable to switch to phone login because authentication has advanced",
+                               &command.pending);
+                    continue;
+                }
+                phone_login_restart_pending_ = send_now(std::move(command));
+                if (phone_login_restart_pending_) break;
+            } else if (command.account && account_) account_->submit(std::move(*command.account));
             else send_now(std::move(command));
         }
     }
@@ -1163,6 +1274,12 @@ private:
     void handle_authorization_state(const Json &state)
     {
         const tdlib_test::AuthMapping mapping = parse_authorization_state_value(state);
+        auth_state_ = mapping.state;
+        if (mapping.state != AuthState::Unknown && mapping.state != AuthState::WaitingForParameters)
+            phone_login_restart_initializing_ = false;
+        if (phone_login_restart_closing_ &&
+            (mapping.state == AuthState::LoggingOut || mapping.state == AuthState::Closing ||
+             mapping.state == AuthState::WaitingForOtherDeviceConfirmation)) return;
         ClientEvent event;
         event.kind       = ClientEventKind::AuthStateChanged;
         event.auth_state = mapping.state;
@@ -1356,6 +1473,12 @@ private:
         const std::int64_t code  = integer_or(root, "code");
         const std::string detail = safe_tdlib_error_detail(code, string_or(root, "message", "unknown TDLib error"));
         if (pending && pending->kind == PendingKind::LoadChats && code == 404) return;
+        if (pending && pending->kind == PendingKind::GetMessage && code == 404) {
+            // A background refresh can race deletion or a temporary send ID
+            // being replaced. Drop the stale message without showing an error.
+            emit_message_removed(pending->chat_id, pending->message_id);
+            return;
+        }
         std::string message = pending && !pending->operation.empty() ? pending->operation : "TDLib request";
         message += " failed";
         if (code != 0) message += " (code " + std::to_string(code) + ")";
@@ -1399,6 +1522,10 @@ private:
             return;
         }
         if (type == "message") {
+            // A delete/send-success update may have removed this message while
+            // its refresh was in flight. A late response must not restore it.
+            if (pending && pending->kind == PendingKind::GetMessage &&
+                messages_.count({pending->chat_id, pending->message_id}) == 0) return;
             emit_message(parse_message_value(root, &users_, &chats_));
             return;
         }
@@ -1428,6 +1555,46 @@ private:
 
             const std::string type                = td_type(root);
             std::optional<PendingRequest> pending = take_pending(root);
+            if (pending && (pending->kind == PendingKind::RestartPhoneProbe ||
+                            pending->kind == PendingKind::RestartPhoneLogout)) {
+                if (type == "error") {
+                    phone_login_restart_pending_ = false;
+                    phone_login_restart_closing_ = false;
+                    handle_error(root, &*pending);
+                } else if (pending->kind == PendingKind::RestartPhoneProbe) {
+                    handle_phone_login_probe(root);
+                } else if (type != "ok") {
+                    phone_login_restart_pending_ = false;
+                    phone_login_restart_closing_ = false;
+                    emit_error("TDLib returned an unexpected response while switching to phone login", &*pending);
+                }
+                return true;
+            }
+            if (type == "updateAuthorizationState") {
+                const Json *state = field(root, "authorization_state");
+                if (!state) throw std::invalid_argument("authorization update has no authorization_state");
+                const auto mapped_state = parse_authorization_state_value(*state).state;
+                if (mapped_state == AuthState::Closed) {
+                    const bool restarting_for_phone_login = phone_login_restart_closing_;
+                    // Logging out closes this TDLib client. Keep the app's Telegram
+                    // service alive by starting a fresh client so the user can sign in again.
+                    // A phone/QR method switch has already shown its own pending state, so
+                    // don't surface the intermediate Closed state in that case.
+                    if (!restarting_for_phone_login) handle_authorization_state(*state);
+                    clear_client_state();
+                    {
+                        std::lock_guard<std::mutex> lock(command_mutex_);
+                        commands_.clear();
+                    }
+                    phone_login_restart_initializing_ = restarting_for_phone_login;
+                    return !stop_requested_.load(std::memory_order_acquire) && create_client();
+                }
+                handle_authorization_state(*state);
+                return true;
+            }
+            // The reset cancels the old QR request. Ignore its late errors and
+            // data updates until the replacement client has been initialized.
+            if (phone_login_restart_closing_) return true;
             if (pending && pending->kind == PendingKind::Account && account_) {
                 account_->response(pending->account_wire_id, root);
                 return true;
@@ -1436,12 +1603,6 @@ private:
             if (type == "error") {
                 handle_error(root, pending ? &*pending : nullptr);
                 return true;
-            }
-            if (type == "updateAuthorizationState") {
-                const Json *state = field(root, "authorization_state");
-                if (!state) throw std::invalid_argument("authorization update has no authorization_state");
-                handle_authorization_state(*state);
-                return parse_authorization_state_value(*state).state != AuthState::Closed;
             }
             if (type == "updateConnectionState") {
                 const Json *state = field(root, "state");
@@ -1514,31 +1675,8 @@ private:
     {
         bool closed = false;
         try {
-            client_id_ = api_->create_client_id();
-            if (client_id_ <= 0) {
-                emit_error("td_create_client_id returned an invalid client identifier");
-            } else {
-                account_ = std::make_unique<TdlibAccountProtocol>(
-                    [this](Json request, std::uint64_t wire_id) {
-                        PendingRequest pending;
-                        pending.kind = PendingKind::Account;
-                        pending.operation = "account request";
-                        pending.account_wire_id = wire_id;
-                        return send_now({std::move(request), std::move(pending), std::nullopt});
-                    },
-                    [this](AccountUpdate update) {
-                        ClientEvent event;
-                        event.kind = ClientEventKind::Account;
-                        event.account = std::move(update);
-                        emit(std::move(event));
-                    },
-                    [this](const Json& value) {
-                        Chat chat = parse_chat_value(value);
-                        cache_chat(chat);
-                        return chat;
-                    });
+            if (create_client()) {
                 emit_status("TDLib runtime loaded");
-                send_now({build_initialization_request(), {PendingKind::Generic, "initialize TDLib"}});
                 while (!stop_requested_.load(std::memory_order_acquire)) {
                     drain_commands();
                     const char *payload = api_->receive(kReceiveTimeoutSeconds);
@@ -1558,14 +1696,7 @@ private:
             std::fputs("[telegram] TDLib did not close in time; keeping libtdjson loaded for process safety\n", stderr);
             api_->library.release();
         }
-        pending_requests_.clear();
-        account_.reset();
-        pending_chat_fetches_.clear();
-        pending_user_fetches_.clear();
-        chats_.clear();
-        users_.clear();
-        messages_.clear();
-        client_id_ = 0;
+        clear_client_state();
         worker_active_.store(false, std::memory_order_release);
     }
 
@@ -1586,6 +1717,10 @@ private:
     std::unique_ptr<TdJsonApi> api_;
     std::unique_ptr<TdlibAccountProtocol> account_;
     int client_id_ = 0;
+    AuthState auth_state_ = AuthState::Unknown;
+    bool phone_login_restart_pending_ = false;
+    bool phone_login_restart_closing_ = false;
+    bool phone_login_restart_initializing_ = false;
 
     std::unordered_map<std::int64_t, PendingRequest> pending_requests_;
     std::unordered_set<std::int64_t> pending_chat_fetches_;
@@ -1684,6 +1819,11 @@ std::string load_chats_request(std::int32_t limit)
 std::string initialization_request()
 {
     return support::json::stringify(build_initialization_request());
+}
+
+std::string qr_login_request()
+{
+    return support::json::stringify(build_qr_login_request());
 }
 
 std::string download_file_request(std::int32_t file_id, std::int32_t priority)

@@ -61,6 +61,14 @@ void test_authorization_and_connection_states()
     assert(telegram::tdlib_test::map_connection_state(R"({"@type":"connectionStateReady"})") == ConnectionState::Ready);
 }
 
+void test_qr_login_request()
+{
+    const auto request = support::json::parse(telegram::tdlib_test::qr_login_request());
+    assert(request.at("@type").as_string() == "requestQrCodeAuthentication");
+    assert(request.at("other_user_ids").is_array());
+    assert(request.at("other_user_ids").as_array().empty());
+}
+
 void test_file_mapping()
 {
     const auto file = telegram::tdlib_test::map_file(
@@ -356,6 +364,7 @@ void test_sender_avatar_arrives_after_message_and_outgoing_name_is_stable()
 int main()
 {
     test_authorization_and_connection_states();
+    test_qr_login_request();
     test_file_mapping();
     test_chat_mapping_preserves_int64();
     test_private_and_group_chat_types();

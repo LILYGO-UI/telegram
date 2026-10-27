@@ -967,7 +967,9 @@ int main(int argc, char** argv)
     click(context.root, "telegram_logout");
     click(context.root, "telegram_logout_confirm");
     assert(lv_obj_is_visible(required(context.root, "telegram_auth_panel")));
-    assert(std::string(lv_label_get_text(required(context.root, "telegram_auth_title"))) == "Signed out");
+    assert(std::string(lv_label_get_text(required(context.root, "telegram_auth_title"))) == "Sign in to Telegram");
+    assert(lv_obj_find_by_name(context.root, "telegram_auth_input"));
+    assert(lv_obj_find_by_name(context.root, "telegram_auth_submit"));
     assert(!lv_obj_find_by_name(context.root, "telegram_chat_list"));
     assert(!lv_obj_find_by_name(context.root, "telegram_composer"));
     assert(!lv_obj_find_by_name(context.root, "telegram_settings"));

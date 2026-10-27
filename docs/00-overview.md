@@ -15,8 +15,8 @@
 - 桌面预览使用 SDL2；设备默认使用 DRM/KMS。
 - 标准测试视口为竖屏 `568x1232` 和横屏 `1232x568`。布局必须依据容器的
   实际几何尺寸响应，不得对外暴露应用展示模式。
-- 顶层构建系统是 CMake 3.21 或更新版本，稳定预设名为 `host-simulator` 和
-  `cm0-cross`。
+- 顶层构建系统是 CMake 3.21 或更新版本，稳定预设名为 `host-simulator`、
+  `host-telegram` 和 `cm0-cross`。
 - 应用只能通过 `find_package(LilyGoUI CONFIG REQUIRED)` 消费平台 SDK。不得引用
   Launcher 源码、其他应用仓库或 AppKit 私有文件。
 - `/usr/share/launcher/apps` 下的 Launcher manifest 只是运行时发现协议，不是
@@ -79,6 +79,7 @@ LPM 是开发者的首选入口，CMake presets 是可独立调用的底层稳�
 | 目标 | LPM 入口 | CMake 底层入口 | 输出 |
 | --- | --- | --- | --- |
 | 启动桌面模拟器 | `lpm start` | `cmake --preset host-simulator` 后构建 | `build/host-simulator/` |
+| 使用真实 TDLib 启动主机客户端 | `lpm start --preset host-telegram` | `cmake --preset host-telegram` 后构建 | `build/host-telegram/` |
 | 运行主机测试 | `lpm test` | `ctest --preset host-simulator` | 测试结果和渲染快照 |
 | 交叉构建和打包 | `lpm pack` | `cmake --preset cm0-cross` 后运行 CPack | `dist/*.deb` |
 | 部署到设备 | `lpm deploy` | 无 | 设备上已安装的 Debian 包 |

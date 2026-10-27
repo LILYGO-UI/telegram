@@ -3,6 +3,7 @@
 #include "app_identity.h"
 #include "components/components.hpp"
 
+#include <cm0/input.h>
 #include <cm0/typography.h>
 
 #include <algorithm>
@@ -209,6 +210,7 @@ void TelegramView::confirm_account_action(const char* title, const char* text, s
     hide_keyboard();
     pending_account_confirmation_ = std::move(action);
     auto* overlay = lv_obj_create(surface_);
+    cm0_input_set_focus_scope(overlay);
     logout_dialog_ = overlay;
     lv_obj_set_name_static(overlay, "telegram_account_dialog");
     account_plain(overlay);
@@ -841,7 +843,7 @@ void TelegramView::build_settings(lv_obj_t* parent)
                 others = true;
                 const auto id = session.id;
                 const auto name = session.device_model.empty() ? session.application_name : session.device_model;
-                action_row("telegram_session_terminate", name.empty() ? "Telegram" : name.c_str(), describe(session), kPhoneIcon, [this, id, name] {
+                auto* row = action_row("telegram_session_terminate", name.empty() ? "Telegram" : name.c_str(), describe(session), kPhoneIcon, [this, id, name] {
                     const auto message = "Log out " + (name.empty() ? std::string("this device") : name) + "?";
                     confirm_account_action("Terminate Session?", message.c_str(), [this, id] {
                         auto request = account_request(AccountAction::TerminateSession);
@@ -849,6 +851,7 @@ void TelegramView::build_settings(lv_obj_t* parent)
                         view_model_.account_action(request);
                     });
                 });
+                focus_targets_["session:" + std::to_string(id)] = row;
             }
             if (!others) account_message(settings, "telegram_sessions_empty", "No other active sessions");
             break;
@@ -863,7 +866,7 @@ void TelegramView::build_settings(lv_obj_t* parent)
                 const auto id = sender.id;
                 const auto is_chat = sender.is_chat;
                 const auto name = sender.name.empty() ? std::to_string(sender.id) : sender.name;
-                action_row("telegram_blocked_unblock", name.c_str(), "Unblock", kUserIcon, [this, id, is_chat, name] {
+                auto* row = action_row("telegram_blocked_unblock", name.c_str(), "Unblock", kUserIcon, [this, id, is_chat, name] {
                     confirm_account_action("Unblock?", name.c_str(), [this, id, is_chat] {
                         auto request = account_request(AccountAction::UnblockSender);
                         request.target_id = id;
@@ -871,6 +874,7 @@ void TelegramView::build_settings(lv_obj_t* parent)
                         view_model_.account_action(request);
                     });
                 });
+                focus_targets_[std::string(is_chat ? "blocked-chat:" : "blocked-user:") + std::to_string(id)] = row;
             }
             if (state.blocked_total > static_cast<std::int32_t>(state.blocked.size())) {
                 account_message(settings, "telegram_blocked_count", std::to_string(state.blocked.size()) + " of " + std::to_string(state.blocked_total));

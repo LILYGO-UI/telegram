@@ -37,6 +37,9 @@
 
 ### 当前页面和行为
 
+- 登录页可通过 `Use QR code` 和 `Use phone number` 在二维码与手机号方式之间
+  双向切换，并保留已输入的手机号。二维码请求和认证重置期间仍可切换，按最后
+  选择显示页面；后台准备完成前禁用手机号提交。二维码登录链接由 TDLib 自动更新。
 - 根导航提供 `Contacts`、`Chats` 和 `Settings` 三个页签。设置页采用分组列表和
   可返回的详情页；未接入的通话、代理等功能不设置占位入口。
 - 会话列表使用与页面同色的连续列表行、圆形头像、名称、最后消息预览、时间和未读徽标。
@@ -327,6 +330,9 @@ ctest --preset host-simulator
   过期响应隔离、临时私聊、偏好持久化及资源边界测试；
 - `telegram-image-decoder-limits`：图片解码资源限制测试；
 - `telegram-voice-identity`：语音播放消息身份测试；
+- `telegram-qr-login-ui`：登录方式双向切换、等待状态、手机号草稿和二维码更新；
+- `telegram-tdlib-auth-restart`：未完成的二维码认证重置、客户端重建、过期事件过滤
+  和扫码成功与切换同时发生时的状态检查；
 - `telegram-tdlib-mapping`：TDLib JSON 映射测试；
 - `telegram-tdlib-account`：资料、联系人、群组和频道详情、通知、隐私例外保留、
   设备、黑名单及存储操作的 TDLib 请求和响应测试；详情覆盖过期请求、有效公开

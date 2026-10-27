@@ -8,8 +8,8 @@
 
 当前版本支持：
 
-- 使用手机号、邮件地址、邮件验证码、Telegram 验证码和两步验证密码完成已有
-  Telegram 账号登录；
+- 扫描 Telegram 提供的二维码，或使用手机号、邮件地址、邮件验证码、Telegram
+  验证码和两步验证密码完成已有 Telegram 账号登录；
 - 加载聊天列表和当前聊天的消息历史；
 - 在已加载会话和联系人中本地搜索；加载、添加、删除联系人并打开私聊；
 - 查看个人资料、编辑姓名、用户名与简介，以及打开 Saved Messages；
@@ -173,6 +173,10 @@ export TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef
 export TELEGRAM_DATABASE_KEY='设备专用的数据库密钥'
 ```
 
+如果不使用仓库缓存中的 TDLib，可在 CMake 配置时传入
+`-DTELEGRAM_TDJSON_LIBRARY=/absolute/path/to/libtdjson.so`；运行时的
+`LILYGO_UI_TDJSON_LIBRARY` 会覆盖该默认路径。
+
 `TELEGRAM_API_ID` 必须是正整数。缺少或无效的 ID/hash 时，真实后端不会连接，
 界面会显示配置错误。CMake 值会写入生成头文件和二进制，且原值会出现在构建树
 的 `CMakeCache.txt` 中；不要提交包含凭据的缓存或构建目录。运行时环境变量也可能
@@ -234,16 +238,31 @@ ctest --preset host-simulator
 TELEGRAM_DEMO=1 lpm start --no-build --foreground
 ```
 
+开发机需要使用真实 Telegram 后端时，可使用单独的主机 preset：
+
+```sh
+cmake --preset host-telegram
+cmake --build --preset host-telegram --parallel
+TELEGRAM_API_ID=123456 \
+TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef \
+lpm start --preset host-telegram --no-build --foreground
+```
+
+主机配置会自动发现仓库缓存中的 `.cache/tdlib/install/lib/libtdjson.dylib` 或
+`.so`。如 TDLib 安装在其他位置，设置 `LILYGO_UI_TDJSON_LIBRARY` 覆盖自动发现的
+路径。运行时 `TELEGRAM_DEMO=0` 也可覆盖演示构建默认值；已有
+`.lpm/start-telegram.sh` 会同时加载本机凭据、TDLib 路径和数据目录。
+
 要在主机上测试真实后端：
 
 ```sh
-cmake --preset host-simulator -DTELEGRAM_DEMO=OFF
-cmake --build --preset host-simulator --parallel
+cmake --preset host-telegram
+cmake --build --preset host-telegram --parallel
 TELEGRAM_DEMO=0 \
 TELEGRAM_API_ID=123456 \
 TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef \
 LILYGO_UI_TDJSON_LIBRARY=/absolute/path/to/libtdjson.dylib \
-lpm start --no-build --foreground
+lpm start --preset host-telegram --no-build --foreground
 ```
 
 运行时 `TELEGRAM_DEMO=0` 可覆盖演示构建默认值，所以 `lpm start` 本身可以启动

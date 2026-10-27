@@ -26,6 +26,7 @@ std::string encode_bytes(std::string_view bytes);
 std::string sanitize_error_detail(std::int64_t code, std::string detail);
 std::string load_chats_request(std::int32_t limit);
 std::string initialization_request();
+std::string qr_login_request();
 std::string download_file_request(std::int32_t file_id, std::int32_t priority);
 std::string storage_optimizer_request();
 std::vector<std::int64_t> decode_integer_array(std::string_view json);

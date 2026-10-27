@@ -40,6 +40,19 @@ public:
         phone = std::move(value);
     }
 
+    void request_qr_login() override
+    {
+        if (fail_qr_login) throw std::runtime_error("TDLib command queue is full");
+        qr_login_requested = true;
+        ++qr_login_requests;
+    }
+
+    void restart_phone_login() override
+    {
+        if (fail_phone_restart) throw std::runtime_error("TDLib command queue is full");
+        ++phone_login_restarts;
+    }
+
     void submit_email_address(std::string value) override
     {
         email = std::move(value);
@@ -132,6 +145,10 @@ public:
     bool started      = false;
     bool stopped      = false;
     bool logged_out   = false;
+    bool qr_login_requested = false;
+    std::size_t qr_login_requests = 0;
+    std::size_t phone_login_restarts = 0;
+    bool fail_phone_restart = false;
     std::string phone;
     std::string email;
     std::string email_code;
@@ -155,6 +172,7 @@ public:
     bool fail_send                      = false;
     bool fail_download                  = false;
     bool fail_logout                    = false;
+    bool fail_qr_login                  = false;
     bool fail_account                   = false;
     std::vector<telegram::AccountRequest> account_requests;
     std::string startup_error;
@@ -406,12 +424,140 @@ void test_auth_dispatch_and_status()
     confirmation_event.text = "tg://login?token=abc";
     fake->emit(std::move(confirmation_event));
     assert(view_model.pump() == 1);
-    assert(view_model.status_text() == "Confirm login on another device: tg://login?token=abc");
+    assert(view_model.status_text().find("tg://") == std::string::npos);
+    assert(view_model.qr_login_link() == "tg://login?token=abc");
 
     pump_auth(view_model, *fake, telegram::AuthState::Ready);
     assert(fake->chat_limit == static_cast<std::int32_t>(telegram::TelegramModel::kMaxChats));
     assert(!view_model.submit_auth_input("unexpected"));
     assert(!view_model.error_text().empty());
+}
+
+void test_qr_login_dispatch_and_link_refresh()
+{
+    auto client = std::make_unique<FakeTelegramClient>();
+    auto* fake  = client.get();
+    telegram::TelegramViewModel view_model(std::move(client), {});
+    assert(view_model.start());
+
+    pump_auth(view_model, *fake, telegram::AuthState::WaitingForPhoneNumber);
+    assert(view_model.request_qr_login());
+    assert(fake->qr_login_requested);
+    assert(view_model.qr_login_requested());
+    assert(!view_model.submit_auth_input("+12345"));
+
+    auto confirmation = auth_event(telegram::AuthState::WaitingForOtherDeviceConfirmation);
+    confirmation.text = "tg://login?token=first";
+    fake->emit(std::move(confirmation));
+    assert(view_model.pump() == 1);
+    assert(!view_model.qr_login_requested());
+    assert(view_model.qr_login_link() == "tg://login?token=first");
+    assert(view_model.status_text().find("tg://") == std::string::npos);
+
+    const auto revision = view_model.revision();
+    auto refreshed = auth_event(telegram::AuthState::WaitingForOtherDeviceConfirmation);
+    refreshed.text = "tg://login?token=refreshed";
+    fake->emit(std::move(refreshed));
+    assert(view_model.pump() == 1);
+    assert(view_model.revision() == revision + 1);
+    assert(view_model.qr_login_link() == "tg://login?token=refreshed");
+
+    pump_auth(view_model, *fake, telegram::AuthState::Ready);
+    assert(view_model.qr_login_link().empty());
+}
+
+void test_login_methods_switch_while_requests_are_pending()
+{
+    using telegram::AuthState;
+    auto client = std::make_unique<FakeTelegramClient>();
+    auto* fake  = client.get();
+    telegram::TelegramViewModel model(std::move(client), {});
+    assert(model.start());
+    pump_auth(model, *fake, AuthState::WaitingForPhoneNumber);
+    assert(!model.select_phone_login());
+    assert(model.request_qr_login());
+    assert(model.auth_page_state() == AuthState::WaitingForOtherDeviceConfirmation);
+    assert(model.select_phone_login());
+    assert(fake->phone_login_restarts == 1);
+    assert(model.auth_page_state() == AuthState::WaitingForPhoneNumber);
+    assert(model.auth_input_pending());
+    assert(!model.submit_auth_input("+12345"));
+
+    // Remember the last selection without queuing competing authentication requests.
+    assert(model.request_qr_login());
+    assert(fake->qr_login_requests == 1);
+    auto old_qr = auth_event(AuthState::WaitingForOtherDeviceConfirmation);
+    old_qr.text = "tg://login?token=old";
+    fake->emit(std::move(old_qr));
+    assert(model.pump() == 1);
+    assert(model.qr_login_link() == "tg://login?token=old");
+    assert(model.auth_input_pending());
+    telegram::ClientEvent old_error;
+    old_error.kind = telegram::ClientEventKind::Error;
+    old_error.text = "Previous QR request was cancelled";
+    fake->emit(std::move(old_error));
+    assert(model.pump() == 1);
+    assert(model.auth_input_pending());
+    assert(model.auth_page_state() == AuthState::WaitingForOtherDeviceConfirmation);
+    for (const auto state : {AuthState::LoggingOut, AuthState::Closing, AuthState::Closed,
+                             AuthState::WaitingForParameters}) {
+        pump_auth(model, *fake, state);
+        assert(model.auth_page_state() == AuthState::WaitingForOtherDeviceConfirmation);
+        assert(model.auth_input_pending());
+    }
+    pump_auth(model, *fake, AuthState::WaitingForPhoneNumber);
+    assert(fake->qr_login_requests == 2);
+    assert(model.qr_login_requested());
+
+    auto qr = auth_event(AuthState::WaitingForOtherDeviceConfirmation);
+    qr.text = "tg://login?token=new";
+    fake->emit(std::move(qr));
+    assert(model.pump() == 1);
+    assert(!model.auth_input_pending());
+    assert(model.select_phone_login());
+    assert(fake->phone_login_restarts == 2);
+    pump_auth(model, *fake, AuthState::WaitingForPhoneNumber);
+    assert(!model.auth_input_pending());
+    assert(model.auth_page_state() == AuthState::WaitingForPhoneNumber);
+    assert(model.submit_auth_input(" +12345 "));
+    assert(fake->phone == "+12345");
+}
+
+void test_login_method_switch_failure_and_completed_login()
+{
+    using telegram::AuthState;
+    auto client = std::make_unique<FakeTelegramClient>();
+    auto* fake  = client.get();
+    telegram::TelegramViewModel model(std::move(client), {});
+    assert(model.start());
+    pump_auth(model, *fake, AuthState::WaitingForPhoneNumber);
+    assert(model.request_qr_login());
+    auto qr = auth_event(AuthState::WaitingForOtherDeviceConfirmation);
+    qr.text = "tg://login?token=valid";
+    fake->emit(std::move(qr));
+    assert(model.pump() == 1);
+    fake->fail_phone_restart = true;
+    assert(!model.select_phone_login());
+    assert(model.auth_page_state() == AuthState::WaitingForOtherDeviceConfirmation);
+    assert(!model.error_text().empty());
+    fake->fail_phone_restart = false;
+    assert(model.select_phone_login());
+    telegram::ClientEvent restart_error;
+    restart_error.kind = telegram::ClientEventKind::Error;
+    restart_error.auth_restart_failed = true;
+    restart_error.text = "Unable to restart phone sign-in";
+    fake->emit(std::move(restart_error));
+    assert(model.pump() == 1);
+    assert(!model.auth_input_pending());
+    assert(model.auth_page_state() == AuthState::WaitingForOtherDeviceConfirmation);
+    assert(model.qr_login_link() == "tg://login?token=valid");
+    assert(model.select_phone_login());
+    // A scan can finish just as the user switches methods. Follow the completed login.
+    pump_auth(model, *fake, AuthState::Ready);
+    assert(model.auth_page_state() == AuthState::Ready);
+    assert(!model.auth_input_pending());
+    assert(!model.select_phone_login());
+    assert(!model.request_qr_login());
 }
 
 void test_chat_messages_files_and_commands()
@@ -1248,6 +1394,9 @@ int main()
     test_drafts_are_pruned_with_the_bounded_chat_list();
     test_local_chat_state_clears_when_authentication_resets();
     test_auth_dispatch_and_status();
+    test_qr_login_dispatch_and_link_refresh();
+    test_login_methods_switch_while_requests_are_pending();
+    test_login_method_switch_failure_and_completed_login();
     test_chat_messages_files_and_commands();
     test_pump_limit();
     test_history_moves_the_bounded_window_toward_older_messages();

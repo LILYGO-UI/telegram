@@ -123,6 +123,8 @@ private:
     static void chat_info_event(lv_event_t* event);
     static void send_clicked_event(lv_event_t* event);
     static void auth_submit_event(lv_event_t* event);
+    static void auth_qr_event(lv_event_t* event);
+    static void auth_phone_event(lv_event_t* event);
     static void logout_event(lv_event_t* event);
     static void older_clicked_event(lv_event_t* event);
     static void input_focused_event(lv_event_t* event);
@@ -211,10 +213,12 @@ private:
 
     std::string application_name_;
     std::string auth_draft_;
+    std::string phone_login_draft_;
     std::string composer_draft_;
     std::uint64_t rendered_revision_         = 0;
-    telegram::AuthState rendered_auth_state_ = telegram::AuthState::Unknown;
+    telegram::AuthState rendered_auth_page_state_ = telegram::AuthState::Unknown;
     bool wide_                               = false;
+    bool rebuilding_                         = false;
     bool media_changed_                      = false;
     bool pending_account_chat_open_          = false;
     bool chat_details_open_                  = false;
@@ -234,6 +238,7 @@ private:
     std::string media_status_;
 
     std::vector<std::unique_ptr<ChatContext>> chat_contexts_;
+    std::unordered_map<std::string, lv_obj_t*> focus_targets_;
     std::vector<std::unique_ptr<VoiceContext>> voice_contexts_;
     std::vector<PhotoContext> photo_contexts_;
     std::vector<AvatarContext> avatar_contexts_;

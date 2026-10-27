@@ -50,6 +50,12 @@ public:
     void submit_phone_number(std::string) override
     {
     }
+    void request_qr_login() override
+    {
+    }
+    void restart_phone_login() override
+    {
+    }
     void submit_email_address(std::string) override
     {
     }
@@ -68,6 +74,9 @@ public:
         ClientEvent event;
         event.kind       = ClientEventKind::AuthStateChanged;
         event.auth_state = AuthState::Closed;
+        emit(std::move(event));
+
+        event.auth_state = AuthState::WaitingForPhoneNumber;
         emit(std::move(event));
     }
 
