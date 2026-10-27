@@ -67,7 +67,7 @@ Telegram 返回的数据及用户的隐私权限。
 ### 获取源码
 
 ~~~sh
-git clone --recurse-submodules https://github.com/LILYGO-UI/lilygo-ui-telegram.git
+git clone --recurse-submodules https://github.com/LILYGO-UI/telegram.git
 cd lilygo-ui-telegram
 ~~~
 

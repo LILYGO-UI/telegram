@@ -8,8 +8,8 @@ title = "LilyChat"
 summary = "Unofficial Telegram client for LILYGO UI"
 description = "LilyChat is an unofficial Telegram client for LILYGO UI devices. It uses the Telegram API via TDLib and is part of the Telegram ecosystem, with no official affiliation."
 license = "MIT"
-source_repo = "https://github.com/LILYGO-UI/lilygo-ui-telegram"
-homepage = "https://github.com/LILYGO-UI/lilygo-ui-telegram"
+source_repo = "https://github.com/LILYGO-UI/telegram"
+homepage = "https://github.com/LILYGO-UI/telegram"
 categories = ["Network"]
 
 [[project.authors]]

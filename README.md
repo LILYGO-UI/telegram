@@ -81,7 +81,7 @@ repository root.
 ### Get the Source
 
 ~~~sh
-git clone --recurse-submodules https://github.com/LILYGO-UI/lilygo-ui-telegram.git
+git clone --recurse-submodules https://github.com/LILYGO-UI/telegram.git
 cd lilygo-ui-telegram
 ~~~
 
