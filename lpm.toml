@@ -2,7 +2,7 @@ schema_version = 1
 
 [project]
 package = "lilygo-ui-telegram"
-version = "0.1.0"
+version = "0.1.1"
 app_id = "cc.lilygo.ui.Telegram"
 title = "LilyChat"
 summary = "Unofficial Telegram client for LILYGO UI"
