@@ -283,3 +283,22 @@ LilyChat 通过 [TDLib](https://github.com/tdlib/td)、[LILYGO UI AppKit](https:
 视觉参考来自 [Telegram iOS 经典浅色主题](https://github.com/TelegramMessenger/Telegram-iOS/blob/6ad963e5b62d354da79040f388ae2b9132fb17b8/submodules/TelegramPresentationData/Sources/DefaultDayPresentationTheme.swift#L539)。
 应用采用独立的对话气泡图标，矢量源文件为 assets/app-icon.svg。
 分发客户端时请遵守相关许可及 [Telegram API 条款](https://core.telegram.org/api/terms)。
+
+## K230 Debian riscv64 打包
+
+`k230-debian` preset 用于 T-Display-K230 的 Debian riscv64 应用构建。
+需要支持架构选择的 LPM，以及包含 `cmake/k230-debian-toolchain.cmake` 的
+AppKit 源码 SDK。原有 CM0 ARM64 和桌面模拟器 preset 仍可使用。
+
+Linux 主机安装 `gcc-riscv64-linux-gnu` 和 `g++-riscv64-linux-gnu`，macOS 主机用 `brew install llvm lld dpkg` 安装交叉编译和打包工具。在应用仓库根目录运行打包命令。
+
+```sh
+lpm pack --arch riscv64
+```
+
+`k230-debian` CMake 预设首次配置时从 `LILYGO-UI/canaan-gen` Release 下载固定版本的 Debian BSP，校验 SHA-256，并将压缩包和 `sysroot/` 保存在当前项目的 `.cache/k230-bsp/20261116T104343Z/`。之后可以离线打包，重新生成 `build/` 也会复用缓存。生成的 `.deb` 在 `dist/` 目录。
+
+执行一次 `lpm set-target k230` 后，后续直接运行 `lpm pack`。如需自定义 Debian sysroot，在首次配置前设置 `LILYGO_UI_DEBIAN_SYSROOT`，或向 CMake 传入 `-DLILYGO_UI_DEBIAN_SYSROOT=/path/to/sysroot`。AppKit 默认使用 `third_party/cm0-appkit`，可用 `-DLilyGoUI_DIR=/path/to/appkit` 指定其他版本。
+
+K230 preset 保持启用真实 TDLib 后端；设备端通过软件包依赖安装 riscv64 的
+`libtdjson1.8.38` 运行库。TDLib 在运行时加载，不会捆绑进应用程序。

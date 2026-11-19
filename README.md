@@ -315,3 +315,24 @@ LilyChat uses [TDLib](https://github.com/tdlib/td), [LILYGO UI AppKit](https://g
 from the [Telegram for iOS classic light theme](https://github.com/TelegramMessenger/Telegram-iOS/blob/6ad963e5b62d354da79040f388ae2b9132fb17b8/submodules/TelegramPresentationData/Sources/DefaultDayPresentationTheme.swift#L539).
 The independent icon source is assets/app-icon.svg. Follow the relevant licenses
 and [Telegram API terms](https://core.telegram.org/api/terms) when distributing a client.
+
+## K230 Debian riscv64 packages
+
+The `k230-debian` preset builds the application for T-Display-K230 Debian
+riscv64. Use LPM with architecture selection support and an AppKit source SDK
+that provides `cmake/k230-debian-toolchain.cmake`. The existing CM0 ARM64 and
+host simulator presets remain available.
+
+Install `gcc-riscv64-linux-gnu` and `g++-riscv64-linux-gnu` on Linux, or LLVM, LLD and dpkg on macOS (`brew install llvm lld dpkg`). From this application's repository, run the packaging command.
+
+```sh
+lpm pack --arch riscv64
+```
+
+The `k230-debian` CMake preset downloads the pinned Debian BSP from the `LILYGO-UI/canaan-gen` release and verifies its SHA-256. It keeps the archive and `sysroot/` in this project's `.cache/k230-bsp/20261116T104343Z/`. The next build reuses the cache offline, even with a new `build/` directory. Packages appear in `dist/`.
+
+Run `lpm set-target k230` once to use `lpm pack` for subsequent builds. To use your own Debian sysroot, set `LILYGO_UI_DEBIAN_SYSROOT` before the first configure, or pass `-DLILYGO_UI_DEBIAN_SYSROOT=/path/to/sysroot` to CMake. The pinned `third_party/cm0-appkit` supplies the application SDK. `-DLilyGoUI_DIR=/path/to/appkit` selects another copy.
+
+The K230 preset keeps the real TDLib backend enabled. Install the riscv64
+`libtdjson1.8.38` runtime on the target through the package dependencies; TDLib
+is loaded at runtime and is not bundled into the application.
